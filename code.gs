@@ -1,12 +1,34 @@
-const SHEET_NAME = 'Form';
-const END_PASS_SHEET_NAME = 'EndPass';
-const EMAIL_SUBJECT = 'Your Hall Pass Status';
-const MAX_PASSES_PER_BLOCK = 2; // Define the maximum number of passes per time block
-const END_PASS_FORM_URL = 'https://forms.gle/yxrgRf9rV48SNWmc9';
-const MAX_PASS_DURATION_MINUTES = 20; // Maximum duration for automatic expiration
-const VISUAL_PASS_DURATION_MINUTES = 5; // Default visual duration shown in the email
-const EXEMPT_VISUAL_DURATION_MINUTES = 60; // Longer visual duration for exempt students
-const FRIENDS_SHEET_NAME = 'Friends'; // Define the Friends sheet name
+const SCRIPT_PROPERTIES = PropertiesService.getScriptProperties();
+
+function updateConstants() {
+  SCRIPT_PROPERTIES.setProperty('SHEET_NAME', 'Form');
+  SCRIPT_PROPERTIES.setProperty('END_PASS_SHEET_NAME', 'EndPass');
+  SCRIPT_PROPERTIES.setProperty('EMAIL_SUBJECT', 'Your Hall Pass Status');
+  SCRIPT_PROPERTIES.setProperty('MAX_PASSES_PER_BLOCK', '2');
+  SCRIPT_PROPERTIES.setProperty('END_PASS_FORM_URL', 'https://forms.gle/yxrgRf9rV48SNWmc9');
+  SCRIPT_PROPERTIES.setProperty('MAX_PASS_DURATION_MINUTES', '20');
+  SCRIPT_PROPERTIES.setProperty('VISUAL_PASS_DURATION_MINUTES', '5');
+  SCRIPT_PROPERTIES.setProperty('EXEMPT_VISUAL_DURATION_MINUTES', '6');
+  SCRIPT_PROPERTIES.setProperty('FRIENDS_SHEET_NAME', 'Friends');
+  SCRIPT_PROPERTIES.setProperty('EXEMPT_SHEET_NAME', 'Exempt');
+  SCRIPT_PROPERTIES.setProperty('MAX_ACTIVE_DURATION_MINUTES', '20');
+}
+
+function getConstant(key) {
+  return SCRIPT_PROPERTIES.getProperty(key);
+}
+
+const SHEET_NAME = getConstant('SHEET_NAME');
+const END_PASS_SHEET_NAME = getConstant('END_PASS_SHEET_NAME');
+const EMAIL_SUBJECT = getConstant('EMAIL_SUBJECT');
+const MAX_PASSES_PER_BLOCK = parseInt(getConstant('MAX_PASSES_PER_BLOCK'));
+const END_PASS_FORM_URL = getConstant('END_PASS_FORM_URL');
+const MAX_PASS_DURATION_MINUTES = parseInt(getConstant('MAX_PASS_DURATION_MINUTES'));
+const VISUAL_PASS_DURATION_MINUTES = parseInt(getConstant('VISUAL_PASS_DURATION_MINUTES'));
+const EXEMPT_VISUAL_DURATION_MINUTES = parseInt(getConstant('EXEMPT_VISUAL_DURATION_MINUTES'));
+const FRIENDS_SHEET_NAME = getConstant('FRIENDS_SHEET_NAME');
+const EXEMPT_SHEET_NAME = getConstant('EXEMPT_SHEET_NAME');
+const MAX_ACTIVE_DURATION_MINUTES = parseInt(getConstant('MAX_ACTIVE_DURATION_MINUTES'));
 
 function extractNameFromEmail(email) {
   const parts = email.split('@')[0].split('.');
@@ -42,7 +64,7 @@ function generatePassHtml(bg, name, from, to, expiry) {
         <hr style="border: 0; border-top: 1px solid #eeeeee; margin: 15px 0;">
         <p style="margin: 12px 0; line-height: 1.6;"><strong>To:</strong> ${destinationDisplay}</p>
         <hr style="border: 0; border-top: 1px solid #eeeeee; margin: 15px 0;">
-        <p style="margin: 12px 0; line-height: 1.6;"><strong>Expected to Expire On:</strong> ${expiryDateFormatted} at ${expiryTimeFormatted}</p>
+        <p style="margin: 12px 0; line-height: 1.6;"><strong>Expires On:</strong> ${expiryDateFormatted} at ${expiryTimeFormatted}</p>
         <p style="margin-top: 20px; text-align: center;">
           <a href="${timerLink}" style="display: inline-block; background-color: ${bg}; color: white; padding: 10px 18px; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 16px; margin-right: 10px;" target="_blank">View Timer</a>
           <a href="${END_PASS_FORM_URL}" style="display: inline-block; background-color: #f44336; color: white; padding: 10px 18px; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 16px;" target="_blank">End Pass</a>
@@ -125,7 +147,7 @@ function destinationTitleCase(str) {
 
 function isExemptStudent(email) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const exemptSheet = ss.getSheetByName('Exempt');
+  const exemptSheet = ss.getSheetByName(EXEMPT_SHEET_NAME);
   if (!exemptSheet) {
     Logger.log('Warning: "Exempt" sheet not found.');
     return false;
@@ -141,181 +163,203 @@ function isExemptStudent(email) {
 }
 
 function onFormSubmit(e) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_NAME);
+  const allData = sheet.getDataRange().getValues();
 
   const row = e.range.getRow();
-  const rowData = sheet.getRange(row, 1, 1, sheet.getLastColumn()).getValues()[0];
+  Logger.log('Row number of submission:', row);
+  Logger.log('Number of rows in allData:', allData.length);
 
-  const [timestamp, email, , roomNumber, destinationRaw] = rowData;
-  const destination = destinationRaw.toLowerCase();
-  const name = extractNameFromEmail(email);
-  const timeSubmitted = new Date(timestamp);
+  // Adjust row number to be 0-based index
+  const rowIndex = row - 1;
 
-  // --- Check if the student is exempt ---
-  if (isExemptStudent(email)) {
-    const actualExpiry = new Date(timeSubmitted.getTime() + MAX_PASS_DURATION_MINUTES * 60000);
-    const visualExpiry = new Date(timeSubmitted.getTime() + EXEMPT_VISUAL_DURATION_MINUTES * 60000);
-    const emailBody = generatePassHtml("green", name, roomNumber, destination, visualExpiry);
-    sheet.getRange(row, 12).setValue("ACTIVE"); // Column L - Status
-    sheet.getRange(row, 3).setValue(name);    // Column C - Name
-    // Send email as BCC
-    GmailApp.sendEmail('', EMAIL_SUBJECT, 'Your Hall Pass is Approved (Exempt)', {
-      htmlBody: emailBody,
-      bcc: email // Send to the student as BCC
-    });
-    return; // Stop the rest of the onFormSubmit function for exempt students
-  }
+  if (rowIndex >= 0 && rowIndex < allData.length) {
+    const rowData = allData[rowIndex];
+    Logger.log('rowData:', rowData);
 
-  const currentTime = new Date();
-  const hour = timeSubmitted.getHours();
-  const timeBlock = hour >= 8 && hour < 12 ? "AM" : hour >= 12 && hour <= 23 ? "PM" : "OUT";
+    if (rowData && rowData.length >= 5) { // Ensure rowData is not undefined and has at least 5 elements
+      const [timestamp, email, , roomNumber, destinationRaw] = rowData;
+      const destination = destinationRaw.toLowerCase();
+      const name = extractNameFromEmail(email);
+      const timeSubmitted = new Date(timestamp);
+      const today = timeSubmitted.toDateString(); // Get the date part only
 
-  // Visual duration for the email
-  let visualDuration = VISUAL_PASS_DURATION_MINUTES;
-  if (destination.includes("nurse")) visualDuration = 8;
-  else if (destination.includes("locker")) visualDuration = 5;
-  else if (destination.includes("bathroom")) visualDuration = 5;
-  else if (destination.includes("guidance")) visualDuration = 12;
+      if (isExemptStudent(email)) {
+        const actualExpiry = new Date(timeSubmitted.getTime() + MAX_PASS_DURATION_MINUTES * 60000);
+        const visualExpiry = new Date(timeSubmitted.getTime() + EXEMPT_VISUAL_DURATION_MINUTES * 60000);
+        const emailBody = generatePassHtml("green", name, roomNumber, destination, visualExpiry);
+        sheet.getRange(row, 12).setValue("ACTIVE"); // Column L - Status
+        sheet.getRange(row, 14).setValue(timestamp); // Column N - Activation Timestamp (for exempt students, it's the submission time)
+        sheet.getRange(row, 3).setValue(name);    // Column C - Name
+        GmailApp.sendEmail('', EMAIL_SUBJECT, 'Your Hall Pass is Approved (Exempt)', {
+          htmlBody: emailBody,
+          bcc: email
+        });
+        return;
+      }
 
-  const allData = sheet.getDataRange().getValues();
-  const studentPasses = allData.filter(r => r[1] === email);
+      const currentTime = new Date();
+      const hour = timeSubmitted.getHours();
+      const timeBlock = hour >= 8 && hour < 12 ? "AM" : hour >= 12 && hour <= 23 ? "PM" : "OUT";
 
-  // Check if the student already has an active pass
-  const hasActivePass = studentPasses.some(r => r[11] === "ACTIVE");
+      let visualDuration = VISUAL_PASS_DURATION_MINUTES;
+      if (destination.includes("nurse")) visualDuration = 8;
+      else if (destination.includes("locker")) visualDuration = 5;
+      else if (destination.includes("bathroom")) visualDuration = 5;
+      else if (destination.includes("guidance")) visualDuration = 12;
 
-  // Count the number of active, expired, or waitlisted passes for the current student in the current time block
-  const usedPassesInBlock = studentPasses.filter(r => {
-    const rHour = new Date(r[0]).getHours();
-    const rTimeBlock = rHour >= 8 && rHour < 12 ? "AM" : rHour >= 12 && rHour <= 23 ? "PM" : "OUT";
-    const rStatus = r[11];
-    return rTimeBlock === timeBlock && (rStatus === "ACTIVE" || rStatus === "EXPIRED" || rStatus === "WAITLISTED");
-  }).length;
+      const studentPasses = allData.filter(r => r[1] === email);
+      const hasActivePass = studentPasses.some(r => r[11] === "ACTIVE");
 
-  let status = "REJECTED";
-  let emailBody = "";
-  let waitlistPosition = 0;
+      let status = "REJECTED";
+      let emailBody = "";
 
-  // Check if there is already an active pass for this classroom
-  const activePassInClassroom = allData.some(r => r[3] === roomNumber && r[11] === "ACTIVE");
+      if (hasActivePass) {
+        emailBody = createHtml("red", `You already have an active hall pass. Please wait until it is marked as used.`);
+      } else if (timeBlock === "OUT") {
+        emailBody =createHtml("red", `Hall passes are unavailable at this time.`);
+      } else {
+        // Only count EXPIRED passes from the current day within the current time block
+        const usedPassesInBlock = studentPasses.filter(r => {
+          const rTimestamp = new Date(r[0]);
+          const rDate = rTimestamp.toDateString();
+          const rHour = rTimestamp.getHours();
+          const rTimeBlock = rHour >= 8 && rHour < 12 ? "AM" : rHour >= 12 && rHour <= 23 ? "PM" : "OUT";
+          const rStatus = r[11];
+          return rDate === today && rTimeBlock === timeBlock && rStatus === "EXPIRED";
+        }).length;
 
-  if (hasActivePass) {
-    emailBody = createHtml("red", `You already have an active hall pass. Please wait until it is marked as used.`);
-  } else if (timeBlock === "OUT") {
-    emailBody = createHtml("red", `Hall passes are unavailable at this time.`);
-  } else if (usedPassesInBlock >= MAX_PASSES_PER_BLOCK) {
-    emailBody = createHtml("red", `You have already reached your limit of ${MAX_PASSES_PER_BLOCK} hall passes this ${timeBlock === "AM" ? "morning" : "afternoon"}.`);
-  } else if (activePassInClassroom) {
-    status = "WAITLISTED";
-    emailBody = generateWaitlistHtml(name, roomNumber, destination, 'N/A', new Date(Date.now() + 300000)); // Approximate unlock time
+        const nonExemptActivePassInClassroom = allData.some(r => r[3] === roomNumber && r[11] === "ACTIVE" && !isExemptStudent(r[1]));
+
+        if (usedPassesInBlock >= MAX_PASSES_PER_BLOCK) {
+          emailBody = createHtml("red", `You have already reached your limit of ${MAX_PASSES_PER_BLOCK} hall passes this ${timeBlock === "AM" ? "morning" : "afternoon"}.`);
+        } else if (nonExemptActivePassInClassroom) {
+          status = "WAITLISTED";
+          emailBody = generateWaitlistHtml(name, roomNumber, destination, 'N/A', new Date(Date.now() + 300000));
+        } else {
+          status = "ACTIVE";
+          const actualExpiry = new Date(timeSubmitted.getTime() + MAX_PASS_DURATION_MINUTES * 60000);
+          const visualExpiry = new Date(timeSubmitted.getTime() + visualDuration * 60000);
+          emailBody = generatePassHtml("green", name, roomNumber, destination, visualExpiry);
+          sheet.getRange(row, 14).setValue(timestamp); // Column N - Activation Timestamp
+        }
+      }
+
+      sheet.getRange(row, 12).setValue(status);
+      sheet.getRange(row, 3).setValue(name);
+
+      GmailApp.sendEmail('', EMAIL_SUBJECT, 'Your hall pass info', {
+        htmlBody: emailBody,
+        bcc: email
+      });
+    } else {
+      Logger.log('Error: rowData is undefined or has insufficient length.');
+    }
   } else {
-    status = "ACTIVE";
-    // Actual expiry for the sheet will be MAX_PASS_DURATION_MINUTES
-    const actualExpiry = new Date(timeSubmitted.getTime() + MAX_PASS_DURATION_MINUTES * 60000);
-    // Visual expiry for the email will be visualDuration
-    const visualExpiry = new Date(timeSubmitted.getTime() + visualDuration * 60000);
-    emailBody = generatePassHtml("green", name, roomNumber, destination, visualExpiry);
+    Logger.log('Error: Row number from form submission is out of bounds.');
   }
-
-  // Update Sheet
-  sheet.getRange(row, 12).setValue(status); // Column L - Status
-  sheet.getRange(row, 3).setValue(name);    // Column C - Name
-
-  // Send email as BCC
-  GmailApp.sendEmail('', EMAIL_SUBJECT, 'Your hall pass info', {
-    htmlBody: emailBody,
-    bcc: email // Send to the student as BCC
-  });
 }
 
 function onEndPassFormSubmit(e) {
   Logger.log("onEndPassFormSubmit triggered with event:");
-  Logger.log(JSON.stringify(e)); // Log the entire event object
+  Logger.log(JSON.stringify(e));
 
-  const endPassSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(END_PASS_SHEET_NAME);
-  try {
-    const row = e.range.getRow();
-    const rowData = endPassSheet.getRange(row, 1, 1, endPassSheet.getLastColumn()).getValues()[0];
-    const [endPassTimestamp, studentEmail] = rowData;
-    const formSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
-    const formData = formSheet.getDataRange().getValues();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const endPassSheet = ss.getSheetByName(END_PASS_SHEET_NAME);
+  const endPassRow = e.range.getRow();
+  const endPassRowData = endPassSheet.getRange(endPassRow, 1, 1, endPassSheet.getLastColumn()).getValues()[0];
+  const [endPassTimestamp, studentEmail] = endPassRowData;
 
-    let passesEnded = 0;
+  const formSheet = ss.getSheetByName(SHEET_NAME);
+  const formData = formSheet.getDataRange().getValues();
 
-    Logger.log(`Processing End Pass for email: ${studentEmail}`);
+  const updates = [];
+  let passesEnded = 0;
 
-    for (let i = 1; i < formData.length; i++) { // Start from the second row to skip headers
-      const rowEmail = formData[i][1];
-      const status = formData[i][11];
+  for (let i = 1; i < formData.length; i++) {
+    const rowData = formData[i];
+    const rowEmail = rowData[1];
+    const status = rowData[11];
+    const activationTimestampValue = rowData[13]; // Column N (index 13, 0-based)
 
-      Logger.log(`Checking row ${i + 1}, Email: ${rowEmail}, Status: ${status}`);
-
-      if (rowEmail === studentEmail && (status === "ACTIVE" || status === "WAITLISTED")) {
-        // Get the original timestamp from column A
-        const originalTimestamp = new Date(formData[i][0]);
-        // Calculate the duration in milliseconds
-        const durationMillis = endPassTimestamp.getTime() - originalTimestamp.getTime();
-
-        // Convert milliseconds to hours, minutes, and seconds
-        const hours = Math.floor(durationMillis / (1000 * 60 * 60));
-        const minutes = Math.floor((durationMillis % (1000 * 60 * 60)) / (1000 * 60));
-        const seconds = Math.floor((durationMillis % (1000 * 60)) / 1000);
-
-        // Format the duration as HH:MM:SS
-        const formattedDuration = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-
-        // Write the formatted duration to column M (index 12)
-        formSheet.getRange(i + 1, 13).setValue(formattedDuration);
-        Logger.log(`Setting duration in row ${i + 1} to: ${formattedDuration}`);
-        // Update the status to EXPIRED in column L (index 11)
-        formSheet.getRange(i + 1, 12).setValue("EXPIRED");
-        Logger.log(`Setting status in row ${i + 1} to: EXPIRED`);
-        passesEnded++;
+    if (rowEmail === studentEmail && (status === "ACTIVE" || status === "WAITLISTED")) {
+      let startTime;
+      if (activationTimestampValue instanceof Date) {
+        startTime = activationTimestampValue;
+      } else {
+        startTime = new Date(rowData[0]); // Fallback to submission time if activation time is not available
+        Logger.log(`Warning: Activation timestamp missing for row ${i + 1}. Using submission time.`);
       }
-    }
 
-    if (passesEnded > 0) {
-      Logger.log(`Ended ${passesEnded} passes for ${studentEmail}`);
-      // Optionally, you could send a confirmation email to the student here
-    }
+      const durationMillis = endPassTimestamp.getTime() - startTime.getTime();
+      const hours = Math.floor(durationMillis / (1000 * 60 * 60));
+      const minutes = Math.floor((durationMillis % (1000 * 60 * 60)) / (1000 * 60));
+      const seconds = Math.floor((durationMillis % (1000 * 60)) / 1000);
+      const formattedDuration = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 
-    // Call promoteWaitlist() after processing the end pass form
-    promoteWaitlist();
-    Logger.log("promoteWaitlist() called.");
-
-  } catch (error) {
-    Logger.log(`Error in onEndPassFormSubmit: ${error}`);
-    if (e && !e.range) {
-      Logger.log("The 'range' property is missing from the event object. Ensure the trigger is set to 'On form submit'.");
+      updates.push([formattedDuration, "EXPIRED", i + 1]); // [duration, status, row number]
+      passesEnded++;
     }
   }
+
+  if (updates.length > 0) {
+    updates.forEach(update => {
+      const [duration, status, row] = update;
+      formSheet.getRange(row, 13).setValue(duration); // Column M - Duration
+      formSheet.getRange(row, 12).setValue(status);  // Column L - Status
+    });
+    Logger.log(`Updated ${updates.length} passes for ${studentEmail}.`);
+  }
+
+  promoteWaitlist();
+  Logger.log("promoteWaitlist() called.");
+
 }
 
-const MAX_ACTIVE_DURATION_MINUTES = 20; // Define the maximum active duration
-
 function markExpiredPasses() {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_NAME);
   const data = sheet.getDataRange().getValues();
   const now = new Date();
+  const updates = [];
 
   for (let i = 1; i < data.length; i++) {
-    const status = data[i][11];
-    const timestamp = new Date(data[i][0]);
+    const rowData = data[i];
+    const status = rowData[11];
+    const activationTimestampValue = rowData[13];
 
     if (status === "ACTIVE") {
-      // Calculate the expiry time based on the original timestamp
-      const expiryTime = new Date(timestamp.getTime() + MAX_ACTIVE_DURATION_MINUTES * 60000);
-
-      // If the current time is past the calculated expiry time
+      let startTime;
+      if (activationTimestampValue instanceof Date) {
+        startTime = activationTimestampValue;
+      } else {
+        startTime = new Date(rowData[0]); // Fallback to submission time if activation time is not available
+      }
+      const expiryTime = new Date(startTime.getTime() + MAX_ACTIVE_DURATION_MINUTES * 60000);
       if (now > expiryTime) {
-        sheet.getRange(i + 1, 12).setValue("EXPIRED");
-        Logger.log(`Pass for ${data[i][1]} expired automatically.`);
+        updates.push(["EXPIRED", i + 1]); // [status, row number]
+        Logger.log(`Pass for ${rowData[1]} expired automatically.`);
       }
     }
+  }
+
+  if (updates.length > 0) {
+    const rangeList = [];
+    const valuesList = [];
+    updates.forEach(update => {
+      const [status, row] = update;
+      rangeList.push(`L${row}`);
+      valuesList.push([status]);
+    });
+    sheet.getRangeList(rangeList).setValues(valuesList);
+    Logger.log(`Updated ${updates.length} passes to EXPIRED in batch.`);
   }
 }
 
 function promoteWaitlist() {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_NAME);
   const data = sheet.getDataRange().getValues();
 
   for (let i = 1; i < data.length; i++) {
@@ -323,13 +367,12 @@ function promoteWaitlist() {
     const [timestamp, email, , roomNumber, destination, , , , , , , status] = row;
 
     if (status === "WAITLISTED") {
-      // Check if there are ANY active passes for this student's classroom
       const activePassInClassroom = data.some(r => r[3] === roomNumber && r[11] === "ACTIVE");
 
       if (!activePassInClassroom) {
         sheet.getRange(i + 1, 12).setValue("ACTIVE");
+        sheet.getRange(i + 1, 14).setValue(new Date()); // Set the activation timestamp
 
-        // Visual duration for the email
         let visualDuration = VISUAL_PASS_DURATION_MINUTES;
         if (destination.toLowerCase().includes("nurse")) visualDuration = 8;
         else if (destination.toLowerCase().includes("locker")) visualDuration = 5;
@@ -340,8 +383,7 @@ function promoteWaitlist() {
         const name = extractNameFromEmail(email);
         const html = generatePassHtml("green", name, roomNumber, destination, visualExpiry);
         GmailApp.sendEmail('', EMAIL_SUBJECT, "Your hall pass is now active", { htmlBody: html, bcc: email });
-        // Once promoted, we can break the loop to ensure only the first waitlisted student for that room is activated
-        break;
+        break; // Promote only the first waitlisted student for that room
       }
     }
   }
@@ -349,171 +391,30 @@ function promoteWaitlist() {
 
 function hidePreviousDaysPasses() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const formSheet = ss.getSheetByName(SHEET_NAME); // Assuming SHEET_NAME is defined as 'Form'
+  const formSheet = ss.getSheetByName(SHEET_NAME);
   const data = formSheet.getDataRange().getValues();
   const today = new Date();
-  today.setHours(0, 0, 0, 0); // Get the start of today
+  today.setHours(0, 0, 0, 0);
 
-  // Start from the second row to skip headers
+  const rowsToHide = [];
   for (let i = 1; i < data.length; i++) {
     const timestampValue = data[i][0];
     if (timestampValue instanceof Date) {
       const passDate = new Date(timestampValue);
-      passDate.setHours(0, 0, 0, 0); // Get the start of the pass date
-
-      // If the pass date is before today, hide the row
+      passDate.setHours(0, 0, 0, 0);
       if (passDate.getTime() < today.getTime()) {
-        formSheet.hideRows(i + 1, 1); // i + 1 because sheet rows are 1-indexed
+        rowsToHide.push(i + 1);
       }
     }
   }
-  Logger.log('Previous days\' passes have been hidden.');
-}
 
-function populateRoomDropdown() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const formSheet = ss.getSheetByName('Form');
-  const dashboardSheet = ss.getSheetByName('Dashboard');
-  const formData = formSheet.getDataRange().getValues();
-  const headerRow = formData[0];
-  const roomColIndex = headerRow.indexOf('Room #');
-  const rooms = [...new Set(formData.slice(1).map(row => row[roomColIndex]))].filter(Boolean).sort(); // Get unique rooms, remove blanks, and sort
-
-  // Clear any existing dropdown
-  const roomDropdownCell = dashboardSheet.getRange('G2');
-  roomDropdownCell.clearDataValidations();
-  dashboardSheet.getRange('G1').setValue('Filter by Room:');
-
-  // Create the dropdown
-  const rule = SpreadsheetApp.newDataValidation()
-      .requireValueInList(rooms)
-      .setAllowInvalid(false)
-      .build();
-  roomDropdownCell.setDataValidation(rule);
-  roomDropdownCell.setValue(''); // Set default value to blank
-}
-
-function onDashboardChange(e) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const dashboardSheet = ss.getSheetByName('Dashboard');
-  const formSheet = ss.getSheetByName('Form');
-  const changedCell = dashboardSheet.getActiveRange();
-
-  // Check if the changed cell is the room number dropdown (assuming it's at G2)
-  if (changedCell.getRow() === 2 && changedCell.getColumn() === 7) {
-    const selectedRoom = changedCell.getValue();
-    const formData = formSheet.getDataRange().getValues();
-    const headerRow = formData[0];
-    const dataRows = formData.slice(1);
-
-    const timestampCol = headerRow.indexOf('Timestamp');
-    const emailCol = headerRow.indexOf('Email Address');
-    const roomCol = headerRow.indexOf('Room #');
-    const destinationCol = headerRow.indexOf('Destination');
-
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const tomorrow = new Date(today);
-    tomorrow.setDate(today.getDate() + 1);
-
-    const filteredPasses = dataRows.filter(row => {
-      const timestamp = new Date(row[timestampCol]);
-      const roomNumber = row[roomCol];
-      return roomNumber === selectedRoom && timestamp >= today && timestamp < tomorrow;
-    });
-
-    // Clear previous filtered data
-    const startRow = 8; // Adjust this based on where you want to display the filtered list
-    const numRowsToClear = dashboardSheet.getLastRow() - startRow + 1;
-    if (numRowsToClear > 0) {
-      dashboardSheet.getRange(startRow, 1, numRowsToClear, dashboardSheet.getLastColumn()).clearContent();
-    }
-
-    // Write the filtered passes
-    if (filteredPasses.length > 0) {
-      dashboardSheet.getRange(startRow, 1, 1, 4).setValues([['Timestamp', 'Student Email', 'Room', 'Destination']]).setFontWeight('bold');
-      filteredPasses.forEach((pass, index) => {
-        dashboardSheet.getRange(startRow + 1 + index, 1, 1, 4).setValues([[new Date(pass[timestampCol]), pass[emailCol], pass[roomCol], pass[destinationCol]]]);
-      });
-    } else if (selectedRoom !== '') {
-      dashboardSheet.getRange(startRow, 1).setValue('No passes found for this room today.');
-    }
+  if (rowsToHide.length > 0) {
+    formSheet.hideRows(rowsToHide[0], rowsToHide.length);
+    Logger.log(`Hidden ${rowsToHide.length} previous days' passes.`);
+  } else {
+    Logger.log('No previous days\' passes to hide.');
   }
 }
 
-function updateHallPassDashboard() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const formSheet = ss.getSheetByName('Form');
-  const dashboardSheet = ss.getSheetByName('Dashboard');
-  const formData = formSheet.getDataRange().getValues();
-  const headerRow = formData[0];
-  const dataRows = formData.slice(1);
-
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const startOfWeek = new Date(today);
-  const dayOfWeek = startOfWeek.getDay();
-  const diff = startOfWeek.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
-  startOfWeek.setDate(diff);
-  startOfWeek.setHours(0, 0, 0, 0);
-
-  const classroomPassData = {};
-  const studentPassData = {};
-
-  const timestampCol = headerRow.indexOf('Timestamp');
-  const emailCol = headerRow.indexOf('Email Address');
-  const roomCol = headerRow.indexOf('Room #');
-  const statusCol = headerRow.indexOf('Status');
-
-  dataRows.forEach(row => {
-    const timestamp = new Date(row[timestampCol]);
-    const email = row[emailCol];
-    const roomNumber = row[roomCol];
-    const status = row[statusCol];
-
-    if (roomNumber) {
-      if (!classroomPassData[roomNumber]) {
-        classroomPassData[roomNumber] = { active: 0, today: 0, thisWeek: 0, overall: 0 };
-      }
-      classroomPassData[roomNumber].overall++;
-      if (status === 'ACTIVE') classroomPassData[roomNumber].active++;
-      if (timestamp >= today) classroomPassData[roomNumber].today++;
-      if (timestamp >= startOfWeek) classroomPassData[roomNumber].thisWeek++;
-    }
-
-    if (email) {
-      if (!studentPassData[email]) {
-        studentPassData[email] = { today: 0, thisWeek: 0, overall: 0 };
-      }
-      studentPassData[email].overall++;
-      if (timestamp >= today) studentPassData[email].today++;
-      if (timestamp >= startOfWeek) studentPassData[email].thisWeek++;
-    }
-  });
-
-  dashboardSheet.getRange('A1:E1').clearContent();
-  dashboardSheet.getRange('A1:E1').setValues([['Classroom', 'Active', 'Today', 'This Week', 'Overall']]).setFontWeight('bold');
-  let rowNum = 2;
-  for (const room in classroomPassData) {
-    dashboardSheet.getRange(rowNum, 1, 1, 5).setValues([[room, classroomPassData[room].active, classroomPassData[room].today, classroomPassData[room].thisWeek, classroomPassData[room].overall]]);
-    rowNum++;
-  }
-
-  const studentDataStartRow = rowNum + 2;
-  dashboardSheet.getRange(studentDataStartRow, 1, 1, 4).clearContent();
-  dashboardSheet.getRange(studentDataStartRow, 1, 1, 4).setValues([['Student Email', 'Today', 'This Week', 'Overall']]).setFontWeight('bold');
-  let studentRowNum = studentDataStartRow + 1;
-  for (const email in studentPassData) {
-    dashboardSheet.getRange(studentRowNum, 1, 1, 4).setValues([[email, studentPassData[email].today, studentPassData[email].thisWeek, studentPassData[email].overall]]);
-    studentRowNum++;
-  }
-
-  Logger.log('Hall Pass Dashboard Updated');
-}
-
-function onOpen() {
-  SpreadsheetApp.getUi()
-      .createMenu('Hall Pass Dashboard')
-      .addItem('Populate Room Dropdown', 'populateRoomDropdown')
-      .addToUi();
-}
+// Initialize constants in script properties (run this once)
+// updateConstants();

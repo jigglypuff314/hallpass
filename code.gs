@@ -12,6 +12,7 @@ function updateConstants() {
   SCRIPT_PROPERTIES.setProperty('FRIENDS_SHEET_NAME', 'Friends');
   SCRIPT_PROPERTIES.setProperty('EXEMPT_SHEET_NAME', 'Exempt');
   SCRIPT_PROPERTIES.setProperty('MAX_ACTIVE_DURATION_MINUTES', '20');
+  SCRIPT_PROPERTIES.setProperty('EMAILS_SHEET_NAME', 'Emails'); // New constant for the Emails sheet name
 }
 
 function getConstant(key) {
@@ -29,6 +30,7 @@ const EXEMPT_VISUAL_DURATION_MINUTES = parseInt(getConstant('EXEMPT_VISUAL_DURAT
 const FRIENDS_SHEET_NAME = getConstant('FRIENDS_SHEET_NAME');
 const EXEMPT_SHEET_NAME = getConstant('EXEMPT_SHEET_NAME');
 const MAX_ACTIVE_DURATION_MINUTES = parseInt(getConstant('MAX_ACTIVE_DURATION_MINUTES'));
+const EMAILS_SHEET_NAME = getConstant('EMAILS_SHEET_NAME'); // Get the Emails sheet name
 
 function extractNameFromEmail(email) {
   const parts = email.split('@')[0].split('.');
@@ -165,8 +167,24 @@ function isExemptStudent(email) {
 function onFormSubmit(e) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(SHEET_NAME);
-  const allData = sheet.getDataRange().getValues();
+  const emailsSheet = ss.getSheetByName(EMAILS_SHEET_NAME); // Get the Emails sheet
+  let nameLookup = {};
 
+  if (emailsSheet) {
+    const emailsData = emailsSheet.getDataRange().getValues();
+    // Create a lookup object (dictionary) where key is email and value is name
+    for (let i = 0; i < emailsData.length; i++) {
+      const name = emailsData[i][0]; // Column A is Name
+      const email = emailsData[i][1]; // Column B is Email
+      if (email) {
+        nameLookup[email] = name;
+      }
+    }
+  } else {
+    Logger.log(`Warning: Sheet "${EMAILS_SHEET_NAME}" not found. Using email to extract name.`);
+  }
+
+  const allData = sheet.getDataRange().getValues();
   const row = e.range.getRow();
   Logger.log('Row number of submission:', row);
   Logger.log('Number of rows in allData:', allData.length);
@@ -181,7 +199,13 @@ function onFormSubmit(e) {
     if (rowData && rowData.length >= 5) { // Ensure rowData is not undefined and has at least 5 elements
       const [timestamp, email, , roomNumber, destinationRaw] = rowData;
       const destination = destinationRaw.toLowerCase();
-      const name = extractNameFromEmail(email);
+      let name = nameLookup[email]; // Try to get the name from the Emails sheet
+
+      if (!name) {
+        name = extractNameFromEmail(email); // Fallback to extracting from email if not found
+        Logger.log(`Name not found in "${EMAILS_SHEET_NAME}" for email: ${email}. Extracted "${name}" from email.`);
+      }
+
       const timeSubmitted = new Date(timestamp);
       const today = timeSubmitted.toDateString(); // Get the date part only
 
@@ -190,12 +214,13 @@ function onFormSubmit(e) {
         const visualExpiry = new Date(timeSubmitted.getTime() + EXEMPT_VISUAL_DURATION_MINUTES * 60000);
         const emailBody = generatePassHtml("green", name, roomNumber, destination, visualExpiry);
         sheet.getRange(row, 12).setValue("ACTIVE"); // Column L - Status
-        sheet.getRange(row, 14).setValue(timestamp); // Column N - Activation Timestamp (for exempt students, it's the submission time)
-        sheet.getRange(row, 3).setValue(name);    // Column C - Name
+        sheet.getRange(row, 14).setValue(timestamp); // Column N - Activation Timestamp
+        sheet.getRange(row,3).setValue(name);    // Column C - Name
         GmailApp.sendEmail('', EMAIL_SUBJECT, 'Your Hall Pass is Approved (Exempt)', {
           htmlBody: emailBody,
           bcc: email
         });
+        sortFormSheetNewestToOldest(); // Sort after processing the submission
         return;
       }
 
@@ -218,7 +243,7 @@ function onFormSubmit(e) {
       if (hasActivePass) {
         emailBody = createHtml("red", `You already have an active hall pass. Please wait until it is marked as used.`);
       } else if (timeBlock === "OUT") {
-        emailBody =createHtml("red", `Hall passes are unavailable at this time.`);
+        emailBody = createHtml("red", `Hall passes are unavailable at this time.`);
       } else {
         // Only count EXPIRED passes from the current day within the current time block
         const usedPassesInBlock = studentPasses.filter(r => {
@@ -259,6 +284,7 @@ function onFormSubmit(e) {
   } else {
     Logger.log('Error: Row number from form submission is out of bounds.');
   }
+  sortFormSheetNewestToOldest(); // Sort after processing the submission
 }
 
 function onEndPassFormSubmit(e) {
@@ -281,22 +307,22 @@ function onEndPassFormSubmit(e) {
     const rowData = formData[i];
     const rowEmail = rowData[1];
     const status = rowData[11];
-    const activationTimestampValue = rowData[13]; // Column N (index 13, 0-based)
+    const activationTimestampValue = rowData[13]; // Column N
 
     if (rowEmail === studentEmail && (status === "ACTIVE" || status === "WAITLISTED")) {
       let startTime;
       if (activationTimestampValue instanceof Date) {
         startTime = activationTimestampValue;
       } else {
-        startTime = new Date(rowData[0]); // Fallback to submission time if activation time is not available
+        startTime = new Date(rowData[0]); // Fallback
         Logger.log(`Warning: Activation timestamp missing for row ${i + 1}. Using submission time.`);
       }
 
       const durationMillis = endPassTimestamp.getTime() - startTime.getTime();
-      const hours = Math.floor(durationMillis / (1000 * 60 * 60));
-      const minutes = Math.floor((durationMillis % (1000 * 60 * 60)) / (1000 * 60));
-      const seconds = Math.floor((durationMillis % (1000 * 60)) / 1000);
-      const formattedDuration = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+      const totalSeconds = Math.floor(durationMillis / 1000);
+      const minutes = Math.floor(totalSeconds / 60);
+      const seconds = totalSeconds % 60;
+      const formattedDuration = `${String(minutes).padStart(1, '0')}:${String(seconds).padStart(2, '0')}`;
 
       updates.push([formattedDuration, "EXPIRED", i + 1]); // [duration, status, row number]
       passesEnded++;
@@ -314,7 +340,6 @@ function onEndPassFormSubmit(e) {
 
   promoteWaitlist();
   Logger.log("promoteWaitlist() called.");
-
 }
 
 function markExpiredPasses() {
@@ -326,34 +351,44 @@ function markExpiredPasses() {
 
   for (let i = 1; i < data.length; i++) {
     const rowData = data[i];
-    const status = rowData[11];
-    const activationTimestampValue = rowData[13];
+    const status = rowData[11]; // Column L - Status (0-indexed 11)
+    const activationTimestampValue = rowData[13]; // Column N - Activation Timestamp (0-indexed 13)
 
     if (status === "ACTIVE") {
       let startTime;
       if (activationTimestampValue instanceof Date) {
         startTime = activationTimestampValue;
       } else {
-        startTime = new Date(rowData[0]); // Fallback to submission time if activation time is not available
+        startTime = new Date(rowData[0]); // Fallback to submission time
       }
       const expiryTime = new Date(startTime.getTime() + MAX_ACTIVE_DURATION_MINUTES * 60000);
       if (now > expiryTime) {
-        updates.push(["EXPIRED", i + 1]); // [status, row number]
+        updates.push({ row: i + 1, col: 12, value: "EXPIRED" }); // Store row, col (1-indexed), and new status
         Logger.log(`Pass for ${rowData[1]} expired automatically.`);
       }
     }
   }
 
+  // Perform updates
   if (updates.length > 0) {
-    const rangeList = [];
-    const valuesList = [];
+    // Collect all unique rows to update to minimize calls
+    const rowsToUpdate = {};
     updates.forEach(update => {
-      const [status, row] = update;
-      rangeList.push(`L${row}`);
-      valuesList.push([status]);
+      if (!rowsToUpdate[update.row]) {
+        rowsToUpdate[update.row] = [];
+      }
+      rowsToUpdate[update.row].push({ col: update.col, value: update.value });
     });
-    sheet.getRangeList(rangeList).setValues(valuesList);
-    Logger.log(`Updated ${updates.length} passes to EXPIRED in batch.`);
+
+    for (const rowNum in rowsToUpdate) {
+      rowsToUpdate[rowNum].forEach(updateItem => {
+        sheet.getRange(parseInt(rowNum), updateItem.col).setValue(updateItem.value);
+      });
+    }
+
+    Logger.log(`Updated ${updates.length} passes to EXPIRED.`);
+  } else {
+    Logger.log('No active passes to expire.');
   }
 }
 
@@ -414,6 +449,23 @@ function hidePreviousDaysPasses() {
   } else {
     Logger.log('No previous days\' passes to hide.');
   }
+}
+
+function sortFormSheetNewestToOldest() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const formSheet = ss.getSheetByName(SHEET_NAME);
+  if (!formSheet) {
+    Logger.log(`Error: Sheet "${SHEET_NAME}" not found.`);
+    return;
+  }
+  const lastRow = formSheet.getLastRow();
+  if (lastRow < 2) {
+    Logger.log('No data to sort (less than 2 rows).');
+    return;
+  }
+  const rangeToSort = formSheet.getRange(2, 1, lastRow - 1, formSheet.getLastColumn()); // Start from row 2 to exclude headers
+  rangeToSort.sort({ column: 1, ascending: false }); // Sort by the first column (Timestamp), descending (newest first)
+  Logger.log('Sheet "${SHEET_NAME}" sorted from newest to oldest.');
 }
 
 // Initialize constants in script properties (run this once)

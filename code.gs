@@ -12,7 +12,7 @@ function updateConstants() {
   SCRIPT_PROPERTIES.setProperty('FRIENDS_SHEET_NAME', 'Friends');
   SCRIPT_PROPERTIES.setProperty('EXEMPT_SHEET_NAME', 'Exempt');
   SCRIPT_PROPERTIES.setProperty('MAX_ACTIVE_DURATION_MINUTES', '20');
-  SCRIPT_PROPERTIES.setProperty('EMAILS_SHEET_NAME', 'Emails'); // New constant for the Emails sheet name
+  SCRIPT_PROPERTIES.setProperty('EMAILS_SHEET_NAME', 'Emails');
 }
 
 function getConstant(key) {
@@ -30,7 +30,7 @@ const EXEMPT_VISUAL_DURATION_MINUTES = parseInt(getConstant('EXEMPT_VISUAL_DURAT
 const FRIENDS_SHEET_NAME = getConstant('FRIENDS_SHEET_NAME');
 const EXEMPT_SHEET_NAME = getConstant('EXEMPT_SHEET_NAME');
 const MAX_ACTIVE_DURATION_MINUTES = parseInt(getConstant('MAX_ACTIVE_DURATION_MINUTES'));
-const EMAILS_SHEET_NAME = getConstant('EMAILS_SHEET_NAME'); // Get the Emails sheet name
+const EMAILS_SHEET_NAME = getConstant('EMAILS_SHEET_NAME');
 
 function extractNameFromEmail(email) {
   const parts = email.split('@')[0].split('.');
@@ -79,19 +79,20 @@ function generatePassHtml(bg, name, from, to, expiry) {
   </div>`;
 }
 
-// For WAITLISTED Hall Passes
-function generateWaitlistHtml(name, from, to, position, unlockTime) {
+// For ALL WAITLISTED Hall Passes (classroom capacity OR friend-based)
+function generateWaitlistHtml(name, from, to, position, unlockTime) { // Removed reasonMessage parameter
   const destinationDisplay = destinationTitleCase(to);
   const now = new Date();
   const diff = unlockTime.getTime() - now.getTime();
-  let remainingTime = "Your pass may be active soon. Check for a new email.";
-  let timerColor = "green";
+  let remainingTime = "Estimating activation...";
+  let timerColor = "#333";
 
   if (diff > 0) {
     const mins = Math.floor(diff / 60000);
     const secs = Math.floor((diff % 60000) / 1000);
     remainingTime = `${mins}m ${String(secs).padStart(2, '0')}s`;
-    timerColor = "#333";
+  } else {
+    remainingTime = "Awaiting activation.";
   }
 
   const unlockDateFormatted = unlockTime.toLocaleDateString();
@@ -116,6 +117,9 @@ function generateWaitlistHtml(name, from, to, position, unlockTime) {
         <p style="margin: 20px 0 10px 0; text-align: center;">
           <strong style="font-size: 18px; color: orange; display: block; margin-bottom: 5px;">Estimated Wait Time:</strong>
           <span id="timer" style="font-weight: bold; font-size: 28px; color: ${timerColor};">${remainingTime}</span>
+        </p>
+        <p style="margin: 12px 0; line-height: 1.6; color: #E67E22; font-weight: bold;">
+          Your pass may be active soon. Check for a new email.
         </p>
       </div>
     </div>
@@ -164,30 +168,69 @@ function isExemptStudent(email) {
   return false;
 }
 
+/**
+ * Loads the friends data from the "Friends" sheet and returns a lookup object.
+ * The lookup object maps each email to a Set of their friends' emails.
+ * E.g., { "studentA@example.com": Set {"studentB@example.com", "studentC@example.com"} }
+ */
+function getFriendsLookup() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const friendsSheet = ss.getSheetByName(FRIENDS_SHEET_NAME);
+  const friendsLookup = new Map(); // Using Map for potentially better performance with string keys
+
+  if (!friendsSheet) {
+    Logger.log(`Warning: "Friends" sheet named "${FRIENDS_SHEET_NAME}" not found. Friend-based waitlisting will not be applied.`);
+    return friendsLookup; // Return empty map if sheet is missing
+  }
+
+  const friendsData = friendsSheet.getDataRange().getValues();
+  // Assuming friends are in columns A and B, starting from row 1 (no header assumed for simplicity, adjust if needed)
+  for (let i = 0; i < friendsData.length; i++) {
+    const email1 = String(friendsData[i][0]).toLowerCase().trim();
+    const email2 = String(friendsData[i][1]).toLowerCase().trim();
+
+    if (email1 && email2) { // Ensure both emails are present
+      // Add email2 as a friend of email1
+      if (!friendsLookup.has(email1)) {
+        friendsLookup.set(email1, new Set());
+      }
+      friendsLookup.get(email1).add(email2);
+
+      // Add email1 as a friend of email2 (friendship is mutual)
+      if (!friendsLookup.has(email2)) {
+        friendsLookup.set(email2, new Set());
+      }
+      friendsLookup.get(email2).add(email1);
+    }
+  }
+  Logger.log(`Loaded ${friendsLookup.size} distinct students with friends.`);
+  return friendsLookup;
+}
+
+
 function onFormSubmit(e) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(SHEET_NAME);
-  const emailsSheet = ss.getSheetByName(EMAILS_SHEET_NAME); // Get the Emails sheet
-  let nameLookup = {};
+  const emailsSheet = ss.getSheetByName(EMAILS_SHEET_NAME);
+  const friendsLookup = getFriendsLookup(); // Load friends data once per submission
 
+  let nameLookup = {};
   if (emailsSheet) {
     const emailsData = emailsSheet.getDataRange().getValues();
-    // Create a lookup object (dictionary) where key is email and value is name
     for (let i = 0; i < emailsData.length; i++) {
-      const name = emailsData[i][0]; // Column A is Name
-      const email = emailsData[i][1]; // Column B is Email
+      const name = emailsData[i][0];
+      const email = emailsData[i][1];
       if (email) {
-        nameLookup[email] = name;
+        nameLookup[String(email).toLowerCase().trim()] = name; // Store emails as lowercase for consistent lookup
       }
     }
   } else {
     Logger.log(`Warning: Sheet "${EMAILS_SHEET_NAME}" not found. Using email to extract name.`);
   }
 
-  const allData = sheet.getDataRange().getValues();
+  const allData = sheet.getDataRange().getValues(); // Get all data to check for active passes
   const row = e.range.getRow();
   Logger.log('Row number of submission:', row);
-  Logger.log('Number of rows in allData:', allData.length);
 
   // Adjust row number to be 0-based index
   const rowIndex = row - 1;
@@ -196,31 +239,53 @@ function onFormSubmit(e) {
     const rowData = allData[rowIndex];
     Logger.log('rowData:', rowData);
 
-    if (rowData && rowData.length >= 5) { // Ensure rowData is not undefined and has at least 5 elements
-      const [timestamp, email, , roomNumber, destinationRaw] = rowData;
+    if (rowData && rowData.length >= 5) {
+      const [timestamp, emailRaw, , roomNumber, destinationRaw] = rowData;
+      const studentEmail = String(emailRaw).toLowerCase().trim(); // Ensure submitted email is clean
       const destination = destinationRaw.toLowerCase();
-      let name = nameLookup[email]; // Try to get the name from the Emails sheet
+      let name = nameLookup[studentEmail]; // Try to get the name from the Emails sheet
 
       if (!name) {
-        name = extractNameFromEmail(email); // Fallback to extracting from email if not found
-        Logger.log(`Name not found in "${EMAILS_SHEET_NAME}" for email: ${email}. Extracted "${name}" from email.`);
+        name = extractNameFromEmail(studentEmail);
+        Logger.log(`Name not found in "${EMAILS_SHEET_NAME}" for email: ${studentEmail}. Extracted "${name}" from email.`);
       }
 
       const timeSubmitted = new Date(timestamp);
-      const today = timeSubmitted.toDateString(); // Get the date part only
+      const today = timeSubmitted.toDateString();
 
-      if (isExemptStudent(email)) {
+      // --- Start Friend Check Logic ---
+      let friendHasActivePass = false;
+      const studentFriends = friendsLookup.has(studentEmail) ? friendsLookup.get(studentEmail) : new Set();
+
+      if (studentFriends.size > 0) {
+        Logger.log(`Checking for active passes among friends of ${studentEmail}: ${Array.from(studentFriends).join(', ')}`);
+        // Iterate through all existing passes to check for active friends
+        for (let i = 1; i < allData.length; i++) { // Start from 1 to skip header row
+          const existingPass = allData[i];
+          const existingPassEmail = String(existingPass[1]).toLowerCase().trim();
+          const existingPassStatus = existingPass[11]; // Column L
+
+          if (existingPassStatus === "ACTIVE" && studentFriends.has(existingPassEmail)) {
+            friendHasActivePass = true;
+            Logger.log(`Friend ${existingPassEmail} has an active pass.`);
+            break; // Found an active friend, no need to check further
+          }
+        }
+      }
+      // --- End Friend Check Logic ---
+
+      if (isExemptStudent(studentEmail)) {
         const actualExpiry = new Date(timeSubmitted.getTime() + MAX_PASS_DURATION_MINUTES * 60000);
         const visualExpiry = new Date(timeSubmitted.getTime() + EXEMPT_VISUAL_DURATION_MINUTES * 60000);
         const emailBody = generatePassHtml("green", name, roomNumber, destination, visualExpiry);
         sheet.getRange(row, 12).setValue("ACTIVE"); // Column L - Status
         sheet.getRange(row, 14).setValue(timestamp); // Column N - Activation Timestamp
-        sheet.getRange(row,3).setValue(name);    // Column C - Name
+        sheet.getRange(row, 3).setValue(name);    // Column C - Name
         GmailApp.sendEmail('', EMAIL_SUBJECT, 'Your Hall Pass is Approved (Exempt)', {
           htmlBody: emailBody,
-          bcc: email
+          bcc: studentEmail
         });
-        sortFormSheetNewestToOldest(); // Sort after processing the submission
+        sortFormSheetNewestToOldest();
         return;
       }
 
@@ -234,18 +299,20 @@ function onFormSubmit(e) {
       else if (destination.includes("bathroom")) visualDuration = 5;
       else if (destination.includes("guidance")) visualDuration = 12;
 
-      const studentPasses = allData.filter(r => r[1] === email);
+      const studentPasses = allData.filter(r => String(r[1]).toLowerCase().trim() === studentEmail);
       const hasActivePass = studentPasses.some(r => r[11] === "ACTIVE");
 
       let status = "REJECTED";
       let emailBody = "";
+      let waitlistReasonForLog = ""; // For internal logging only
 
       if (hasActivePass) {
         emailBody = createHtml("red", `You already have an active hall pass. Please wait until it is marked as used.`);
+        waitlistReasonForLog = "Already active pass";
       } else if (timeBlock === "OUT") {
         emailBody = createHtml("red", `Hall passes are unavailable at this time.`);
+        waitlistReasonForLog = "Outside operating hours";
       } else {
-        // Only count EXPIRED passes from the current day within the current time block
         const usedPassesInBlock = studentPasses.filter(r => {
           const rTimestamp = new Date(r[0]);
           const rDate = rTimestamp.toDateString();
@@ -255,13 +322,21 @@ function onFormSubmit(e) {
           return rDate === today && rTimeBlock === timeBlock && rStatus === "EXPIRED";
         }).length;
 
-        const nonExemptActivePassInClassroom = allData.some(r => r[3] === roomNumber && r[11] === "ACTIVE" && !isExemptStudent(r[1]));
+        const nonExemptActivePassInClassroom = allData.some(r => r[3] === roomNumber && r[11] === "ACTIVE" && !isExemptStudent(String(r[1]).toLowerCase().trim()));
 
         if (usedPassesInBlock >= MAX_PASSES_PER_BLOCK) {
           emailBody = createHtml("red", `You have already reached your limit of ${MAX_PASSES_PER_BLOCK} hall passes this ${timeBlock === "AM" ? "morning" : "afternoon"}.`);
-        } else if (nonExemptActivePassInClassroom) {
+          waitlistReasonForLog = "Pass limit reached";
+        } else if (friendHasActivePass || nonExemptActivePassInClassroom) { // Both conditions now result in generic waitlist
           status = "WAITLISTED";
+          // Call generateWaitlistHtml without a specific reason message
           emailBody = generateWaitlistHtml(name, roomNumber, destination, 'N/A', new Date(Date.now() + 300000));
+          if (friendHasActivePass) {
+            waitlistReasonForLog = "Friend has active pass";
+          } else { // nonExemptActivePassInClassroom must be true here
+            waitlistReasonForLog = "Active pass in classroom";
+          }
+          Logger.log(`Student ${studentEmail} waitlisted. Internal reason: ${waitlistReasonForLog}`);
         } else {
           status = "ACTIVE";
           const actualExpiry = new Date(timeSubmitted.getTime() + MAX_PASS_DURATION_MINUTES * 60000);
@@ -276,15 +351,16 @@ function onFormSubmit(e) {
 
       GmailApp.sendEmail('', EMAIL_SUBJECT, 'Your hall pass info', {
         htmlBody: emailBody,
-        bcc: email
+        bcc: studentEmail
       });
+      Logger.log(`Hall pass for ${studentEmail} set to status: ${status}. Internal reason: ${waitlistReasonForLog || 'Approved'}`);
     } else {
       Logger.log('Error: rowData is undefined or has insufficient length.');
     }
   } else {
     Logger.log('Error: Row number from form submission is out of bounds.');
   }
-  sortFormSheetNewestToOldest(); // Sort after processing the submission
+  sortFormSheetNewestToOldest();
 }
 
 function onEndPassFormSubmit(e) {
@@ -295,7 +371,8 @@ function onEndPassFormSubmit(e) {
   const endPassSheet = ss.getSheetByName(END_PASS_SHEET_NAME);
   const endPassRow = e.range.getRow();
   const endPassRowData = endPassSheet.getRange(endPassRow, 1, 1, endPassSheet.getLastColumn()).getValues()[0];
-  const [endPassTimestamp, studentEmail] = endPassRowData;
+  const [endPassTimestamp, studentEmailRaw] = endPassRowData;
+  const studentEmail = String(studentEmailRaw).toLowerCase().trim();
 
   const formSheet = ss.getSheetByName(SHEET_NAME);
   const formData = formSheet.getDataRange().getValues();
@@ -305,7 +382,7 @@ function onEndPassFormSubmit(e) {
 
   for (let i = 1; i < formData.length; i++) {
     const rowData = formData[i];
-    const rowEmail = rowData[1];
+    const rowEmail = String(rowData[1]).toLowerCase().trim();
     const status = rowData[11];
     const activationTimestampValue = rowData[13]; // Column N
 
@@ -324,16 +401,15 @@ function onEndPassFormSubmit(e) {
       const seconds = totalSeconds % 60;
       const formattedDuration = `${String(minutes).padStart(1, '0')}:${String(seconds).padStart(2, '0')}`;
 
-      updates.push([formattedDuration, "EXPIRED", i + 1]); // [duration, status, row number]
+      updates.push({ row: i + 1, duration: formattedDuration, status: "EXPIRED" }); // Store row, duration, and new status
       passesEnded++;
     }
   }
 
   if (updates.length > 0) {
     updates.forEach(update => {
-      const [duration, status, row] = update;
-      formSheet.getRange(row, 13).setValue(duration); // Column M - Duration
-      formSheet.getRange(row, 12).setValue(status);  // Column L - Status
+      formSheet.getRange(update.row, 13).setValue(update.duration); // Column M - Duration
+      formSheet.getRange(update.row, 12).setValue(update.status);  // Column L - Status
     });
     Logger.log(`Updated ${updates.length} passes for ${studentEmail}.`);
   }
@@ -371,21 +447,9 @@ function markExpiredPasses() {
 
   // Perform updates
   if (updates.length > 0) {
-    // Collect all unique rows to update to minimize calls
-    const rowsToUpdate = {};
-    updates.forEach(update => {
-      if (!rowsToUpdate[update.row]) {
-        rowsToUpdate[update.row] = [];
-      }
-      rowsToUpdate[update.row].push({ col: update.col, value: update.value });
-    });
-
-    for (const rowNum in rowsToUpdate) {
-      rowsToUpdate[rowNum].forEach(updateItem => {
-        sheet.getRange(parseInt(rowNum), updateItem.col).setValue(updateItem.value);
-      });
+    for (const updateItem of updates) {
+      sheet.getRange(updateItem.row, updateItem.col).setValue(updateItem.value);
     }
-
     Logger.log(`Updated ${updates.length} passes to EXPIRED.`);
   } else {
     Logger.log('No active passes to expire.');
@@ -396,15 +460,35 @@ function promoteWaitlist() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(SHEET_NAME);
   const data = sheet.getDataRange().getValues();
+  const friendsLookup = getFriendsLookup(); // Load friends data for promotion as well
 
   for (let i = 1; i < data.length; i++) {
     const row = data[i];
-    const [timestamp, email, , roomNumber, destination, , , , , , , status] = row;
+    const [timestamp, emailRaw, , roomNumber, destination, , , , , , , status] = row;
+    const studentEmail = String(emailRaw).toLowerCase().trim();
 
     if (status === "WAITLISTED") {
-      const activePassInClassroom = data.some(r => r[3] === roomNumber && r[11] === "ACTIVE");
+      const activePassInClassroom = data.some(r => r[3] === roomNumber && r[11] === "ACTIVE" && !isExemptStudent(String(r[1]).toLowerCase().trim()));
 
-      if (!activePassInClassroom) {
+      // Check if a friend currently has an active pass
+      let friendHasActivePass = false;
+      const studentFriends = friendsLookup.has(studentEmail) ? friendsLookup.get(studentEmail) : new Set();
+      if (studentFriends.size > 0) {
+        for (let j = 1; j < data.length; j++) { // Check all other passes
+          if (i === j) continue; // Skip checking the current student's pass against itself
+          const existingPass = data[j];
+          const existingPassEmail = String(existingPass[1]).toLowerCase().trim();
+          const existingPassStatus = existingPass[11];
+
+          if (existingPassStatus === "ACTIVE" && studentFriends.has(existingPassEmail)) {
+            friendHasActivePass = true;
+            break;
+          }
+        }
+      }
+
+      // Promote ONLY if neither classroom nor friend condition prevents it
+      if (!activePassInClassroom && !friendHasActivePass) {
         sheet.getRange(i + 1, 12).setValue("ACTIVE");
         sheet.getRange(i + 1, 14).setValue(new Date()); // Set the activation timestamp
 
@@ -415,10 +499,11 @@ function promoteWaitlist() {
         else if (destination.toLowerCase().includes("guidance")) visualDuration = 12;
 
         const visualExpiry = new Date(new Date().getTime() + visualDuration * 60000);
-        const name = extractNameFromEmail(email);
+        const name = extractNameFromEmail(studentEmail);
         const html = generatePassHtml("green", name, roomNumber, destination, visualExpiry);
-        GmailApp.sendEmail('', EMAIL_SUBJECT, "Your hall pass is now active", { htmlBody: html, bcc: email });
-        break; // Promote only the first waitlisted student for that room
+        GmailApp.sendEmail('', EMAIL_SUBJECT, "Your hall pass is now active", { htmlBody: html, bcc: studentEmail });
+        Logger.log(`Student ${studentEmail} promoted from waitlist to active.`);
+        break;
       }
     }
   }

@@ -294,8 +294,12 @@ function onFormSubmit(e) {
     Logger.log(`Warning: Sheet "${EMAILS_SHEET_NAME}" not found. Using email to extract name.`);
   }
 
-  // --- Read all main sheet data once ---
+  // --- Read all main sheet data once and FILTER for today's passes ---
   const allDataRange = sheet.getDataRange();
+  if (allDataRange.getValues().length <= 1) {
+    Logger.log('onFormSubmit: Sheet is empty or only has a header row. No existing data to process.');
+  }
+
   const allData = allDataRange.getValues();
   const row = e.range.getRow(); // Get the row number of the submission (1-indexed)
   const rowIndex = row - 1; // Convert to 0-indexed for array access
@@ -305,19 +309,35 @@ function onFormSubmit(e) {
     return;
   }
 
-  // Get the submitted row's data
-  const rowData = allData[rowIndex];
-  const [timestamp, emailRaw, , roomNumber, destinationRaw] = rowData;
-  const studentEmail = String(emailRaw).toLowerCase().trim();
-  const destination = destinationRaw.toLowerCase();
-  let name = nameLookup.has(studentEmail) ? nameLookup.get(studentEmail) : extractNameFromEmail(studentEmail);
+  const submittedRowData = allData[rowIndex];
+  const [submittedTimestampValue, submittedEmailRaw, , submittedRoomNumberRaw, submittedDestinationRaw] = submittedRowData;
 
-  if (!nameLookup.has(studentEmail)) {
-    Logger.log(`Name not found in "${EMAILS_SHEET_NAME}" for email: ${studentEmail}. Extracted "${name}" from email.`);
+  const studentEmail = String(submittedEmailRaw).toLowerCase().trim();
+  const roomNumber = submittedRoomNumberRaw;
+  const destination = submittedDestinationRaw.toLowerCase();
+  let name = nameLookup.has(studentEmail) ? nameLookup.get(studentEmail) : extractNameFromEmail(studentEmail); // Get name based on email
+
+   if (!nameLookup.has(studentEmail)) {
+    Logger.log(`Name not found in "${EMAILS_SHEET_NAME}" for email: ${studentEmail}. Extracted "${name}" from email.`); // Log if name not found
   }
 
-  const timeSubmitted = new Date(timestamp);
-  const today = timeSubmitted.toDateString();
+  const timeSubmitted = new Date(submittedTimestampValue);
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0); // Start of today
+  const todayEnd = new Date();
+  todayEnd.setHours(23, 59, 59, 999); // End of today
+
+  const todayDataWithOriginalIndices = []; // Store objects: { data: rowData, originalRow: 1-indexedRowNumber }
+
+  // Iterate through all data to filter for today's passes (including the submitted one)
+  for (let i = 0; i < allData.length; i++) {
+    const rowDataLoop = allData[i];
+    const timestampValueLoop = rowDataLoop[0];
+    if (timestampValueLoop instanceof Date && timestampValueLoop >= todayStart && timestampValueLoop <= todayEnd) {
+      todayDataWithOriginalIndices.push({ data: rowDataLoop, originalRow: i + 1 }); // Store data and 1-indexed original row number
+    }
+  }
+
 
   // Determine Time Block for the current submission
   const hour = timeSubmitted.getHours();
@@ -331,25 +351,25 @@ function onFormSubmit(e) {
   else if (destination.includes("guidance")) visualDuration = 12;
 
   // --- Filter relevant passes for the current student and context ---
-  const studentPastAndCurrentPassesForBlock = allData.filter((r, idx) => {
-    if (idx === 0 || idx === rowIndex) return false; // Skip header and the current submission itself for status checks
-    const rEmail = String(r[1]).toLowerCase().trim();
-    const rTimestamp = new Date(r[0]);
+  const studentPastAndCurrentPassesForBlock = todayDataWithOriginalIndices.filter(item => {
+    if (item.originalRow === row) return false; // Skip the current submission itself for status checks within today's data
+    const rEmail = String(item.data[1]).toLowerCase().trim();
+    const rTimestamp = new Date(item.data[0]);
     const rDate = rTimestamp.toDateString();
     const rHour = rTimestamp.getHours();
     const rTimeBlock = rHour >= 8 && rHour < 12 ? "AM" : rHour >= 12 && rHour <= 23 ? "PM" : "OUT";
 
-    const isSameBlock = rDate === today && rTimeBlock === timeBlock;
+    const isSameBlock = rTimeBlock === timeBlock;
     return isSameBlock && rEmail === studentEmail;
   });
 
-  const studentActivePasses = studentPastAndCurrentPassesForBlock.filter(r => r[11] === "ACTIVE");
+  const studentActivePasses = studentPastAndCurrentPassesForBlock.filter(item => item.data[11] === "ACTIVE");
   const hasActivePass = studentActivePasses.length > 0;
 
-  const studentWaitlistedPasses = studentPastAndCurrentPassesForBlock.filter(r => r[11] === "WAITLISTED");
+  const studentWaitlistedPasses = studentPastAndCurrentPassesForBlock.filter(item => item.data[11] === "WAITLISTED");
   const hasWaitlistedPass = studentWaitlistedPasses.length > 0;
 
-  const studentExpiredPasses = studentPastAndCurrentPassesForBlock.filter(r => r[11] === "EXPIRED");
+  const studentExpiredPasses = studentPastAndCurrentPassesForBlock.filter(item => item.data[11] === "EXPIRED");
   const usedPassesInBlock = studentExpiredPasses.length;
 
   Logger.log(`onFormSubmit checks for ${studentEmail} (Row ${row}):`);
@@ -396,25 +416,25 @@ function onFormSubmit(e) {
     let nonExemptActivePassInClassroom = false;
 
     // Filter relevant passes (active, same day, same block, same classroom/friend) from *all* data
-    const activePassesInCurrentBlock = allData.filter((r, idx) => {
-        if (idx === 0 || idx === rowIndex) return false; // Skip header and the current submission
-        const rStatus = r[11];
-        const rTimestamp = new Date(r[0]);
-        const rDate = rTimestamp.toDateString();
+    const activePassesInCurrentBlock = todayDataWithOriginalIndices.filter(item => {
+        if (item.originalRow === row) return false; // Skip the current submission
+        const rStatus = item.data[11];
+        const rTimestamp = new Date(item.data[0]);
+        const rDate = rTimestamp.toDateString(); // Date comparison is implicit since we filtered for today
         const rHour = rTimestamp.getHours();
         const rTimeBlock = rHour >= 8 && rHour < 12 ? "AM" : rHour >= 12 && rHour <= 23 ? "PM" : "OUT";
 
-        const isSameBlock = rDate === today && rTimeBlock === timeBlock;
+        const isSameBlock = rTimeBlock === timeBlock; // Data is already filtered for today
         return isSameBlock && rStatus === "ACTIVE"; // Only care about ACTIVE passes for this check
     });
 
     if (studentFriends.size > 0) {
       friendHasActivePass = activePassesInCurrentBlock.some(r => studentFriends.has(String(r[1]).toLowerCase().trim()));
-      if (friendHasActivePass) Logger.log(`  - Friend of ${studentEmail} has an active pass.`);
+      if (friendHasActivePass) Logger.log(`  - Friend of ${studentEmail} has an active pass in this block.`);
     }
 
-    nonExemptActivePassInClassroom = activePassesInCurrentBlock.some(r => r[3] === roomNumber && !exemptStudents.has(String(r[1]).toLowerCase().trim()));
-    if (nonExemptActivePassInClassroom) Logger.log(`  - Active pass in classroom ${roomNumber}.`);
+    nonExemptActivePassInClassroom = activePassesInCurrentBlock.some(item => item.data[3] === roomNumber && !exemptStudents.has(String(item.data[1]).toLowerCase().trim()));
+    if (nonExemptActivePassInClassroom) Logger.log(`  - Active non-exempt pass in classroom ${roomNumber} in this block.`);
 
     if (friendHasActivePass || nonExemptActivePassInClassroom) {
       status = "WAITLISTED";
@@ -435,30 +455,31 @@ function onFormSubmit(e) {
   }
 
   // --- Prepare and perform batch update for the submitted row ---
-  // Ensure the rowData array has enough elements for columns L, M, N (index 11, 12, 13)
+  // Update the submitted row data within the allData array using its original index
   const targetCols = 14; // Columns A-N means 14 columns total (indices 0-13)
-  while (rowData.length < targetCols) {
-    rowData.push(""); // Add empty strings to fill up to the necessary column count
+  while (submittedRowData.length < targetCols) {
+    submittedRowData.push(""); // Add empty strings to fill up to the necessary column count
   }
 
-  rowData[2] = name; // Column C - Name (index 2)
-  rowData[11] = status; // Column L - Status (index 11)
-  rowData[13] = activationTimestamp; // Column N - Activation Timestamp (index 13)
+  submittedRowData[2] = name; // Column C - Name (index 2)
+  submittedRowData[11] = status; // Column L - Status (index 11)
+  submittedRowData[13] = activationTimestamp; // Column N - Activation Timestamp (index 13)
 
-  // Update the single modified row in the sheet
-  sheet.getRange(row, 1, 1, rowData.length).setValues([rowData]);
-  Logger.log(`onFormSubmit: Row ${row} updated to Status: ${status}, Activation: ${activationTimestamp ? activationTimestamp.toLocaleString() : 'N/A'}`);
+   try {
+    // Update the modified row in the sheet using its original 1-indexed row number
+    sheet.getRange(row, 1, 1, submittedRowData.length).setValues([submittedRowData]);
+    Logger.log(`onFormSubmit: Row ${row} updated in sheet to Status: ${status}, Activation: ${activationTimestamp ? activationTimestamp.toLocaleString() : 'N/A'}`);
 
-  // --- Send Email ---
-  try {
-    GmailApp.sendEmail('', EMAIL_SUBJECT, 'Your hall pass info', {
+     // --- Send Email ---
+    GmailApp.sendEmail('', EMAIL_SUBJECT, EMAIL_SUBJECT, { // Using EMAIL_SUBJECT for both subject and name
       htmlBody: emailBody,
       bcc: studentEmail
     });
     Logger.log(`onFormSubmit: Email sent to ${studentEmail} with status: ${status}.`);
-  } catch (emailError) {
-    Logger.log(`onFormSubmit: ERROR sending email to ${studentEmail}: ${emailError.message}`);
-  }
+
+   } catch (error) {
+    Logger.log(`onFormSubmit: ERROR updating sheet or sending email for row ${row}, student ${studentEmail}: ${error.message}`);
+   }
 
 
   // --- Sort the sheet ---
@@ -530,6 +551,7 @@ function onEndPassFormSubmit(e) {
       // Mark the row in memory for update
       rowData[12] = formattedDuration; // Column M - Duration (0-indexed 12)
       rowData[11] = "EXPIRED"; // Column L - Status (0-indexed 11)
+ rowData[13] = ""; // *** CLEAR ACTIVATION TIMESTAMP (Column N - 0-indexed 13) ***
       passesEndedCount++;
       Logger.log(`  - Marking row ${i + 1} for ${studentEmail} as EXPIRED. Calculated Duration: ${formattedDuration}.`);
     }
@@ -551,6 +573,7 @@ function onEndPassFormSubmit(e) {
  * Marks active passes as expired if they exceed MAX_ACTIVE_DURATION_MINUTES.
  */
 function markExpiredPasses() {
+
   Logger.log("markExpiredPasses triggered.");
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(SHEET_NAME);
@@ -559,24 +582,52 @@ function markExpiredPasses() {
     return;
   }
 
-  const dataRange = sheet.getDataRange();
-  const data = dataRange.getValues();
+  const allDataRange = sheet.getDataRange();
+   if (allDataRange.getValues().length <= 1) {
+ Logger.log('markExpiredPasses: Sheet is empty or only has a header row. No passes to check.');
+ return;
+  }
+  const allData = allDataRange.getValues();
+
   const now = new Date();
+  const todayStart = new Date();
+ todayStart.setHours(0, 0, 0, 0); // Start of today
+  const todayEnd = new Date();
+ todayEnd.setHours(23, 59, 59, 999); // End of today
+
+  const todayActivePassesWithOriginalIndices = [];
   let updatedCount = 0;
 
-  for (let i = 1; i < data.length; i++) { // Start from 1 to skip header row
-    const rowData = data[i];
+  // Filter for today's ACTIVE passes
+  for (let i = 0; i < allData.length; i++) { // Iterate through all data
+    const rowData = allData[i];
     const status = rowData[11]; // Column L - Status (0-indexed 11)
-    const activationTimestampValue = rowData[13]; // Column N - Activation Timestamp (0-indexed 13)
+    const timestampValue = rowData[0];
     const studentEmail = String(rowData[1]).toLowerCase().trim(); // Get email for logging
 
-    if (status === "ACTIVE") {
+    if (status === "ACTIVE" && timestampValue instanceof Date && timestampValue >= todayStart && timestampValue <= todayEnd) {
+      todayActivePassesWithOriginalIndices.push({ data: rowData, originalRow: i + 1 }); // Store data and 1-indexed original row number
+    }
+  }
+
+  Logger.log(`markExpiredPasses: Found ${todayActivePassesWithOriginalIndices.length} active passes from today to check.`);
+
+  // Check and update expired passes among today's active passes
+  for (const passInfo of todayActivePassesWithOriginalIndices) {
+    const rowData = passInfo.data;
+    const originalRow = passInfo.originalRow;
+    const activationTimestampValue = rowData[13]; // Column N - Activation Timestamp (0-indexed 13)
+    const studentEmail = String(rowData[1]).toLowerCase().trim();
+
+    // Pass is already confirmed as "ACTIVE" and "today" by the filter
+    let startTime;
+    if (activationTimestampValue instanceof Date) {
       let startTime;
       if (activationTimestampValue instanceof Date) {
         startTime = activationTimestampValue;
       } else {
         startTime = new Date(rowData[0]); // Fallback to submission time
-        Logger.log(`Warning: markExpiredPasses - Activation timestamp missing for row ${i + 1}. Using submission time: ${startTime.toLocaleString()}.`);
+ Logger.log(`Warning: markExpiredPasses - Activation timestamp missing for row ${originalRow}. Using submission time: ${startTime.toLocaleString()}.`);
       }
       const expiryTime = new Date(startTime.getTime() + MAX_ACTIVE_DURATION_MINUTES * 60000);
       Logger.log(`markExpiredPasses: Checking pass for ${studentEmail} (row ${i + 1}). Activated: ${startTime.toLocaleString()}, Expires: ${expiryTime.toLocaleString()}. Current time: ${now.toLocaleString()}`);
@@ -584,20 +635,31 @@ function markExpiredPasses() {
       if (now > expiryTime) {
         // Ensure rowData array has enough length to avoid errors when setting values
         const targetCols = Math.max(rowData.length, 12); // Need space for column L (index 11)
-        while (rowData.length < targetCols) {
-            rowData.push("");
+ while (rowData.length < targetCols + 1) { // Ensure space for column N (index 13) as well
+ rowData.push("");
         }
         rowData[11] = "EXPIRED"; // Update status in memory
+        rowData[13] = ""; // CLEAR ACTIVATION TIMESTAMP (Column N)
+
+        // Optional: Calculate and set duration for auto-expired passes
+        const durationMillis = now.getTime() - startTime.getTime();
+        const totalSeconds = Math.floor(durationMillis / 1000);
+        const minutes = Math.floor(totalSeconds / 60);
+        const seconds = totalSeconds % 60;
+        rowData[12] = `${String(minutes).padStart(1, '0')}:${String(seconds).padStart(2, '0')}`; // Column M - Duration
+
         updatedCount++;
-        Logger.log(`markExpiredPasses: Pass for ${studentEmail} (row ${i + 1}) expired automatically.`);
+        Logger.log(`markExpiredPasses: Pass for ${studentEmail} (row ${originalRow}) expired automatically. Duration: ${rowData[12]}.`);
       }
     }
   }
 
   // Perform batch update if any changes were made
   if (updatedCount > 0) {
-    dataRange.setValues(data); // Write all modified data back to the sheet
+    allDataRange.setValues(allData); // Write all modified data back to the sheet
     Logger.log(`markExpiredPasses: Updated ${updatedCount} passes to EXPIRED.`);
+ promoteWaitlist(); // An expiration might open a slot
+ Logger.log("promoteWaitlist() called from markExpiredPasses after automatic expiration.");
   } else {
     Logger.log('markExpiredPasses: No active passes to expire.');
   }
@@ -616,42 +678,62 @@ function promoteWaitlist() {
   }
 
   const dataRange = sheet.getDataRange();
-  const data = dataRange.getValues(); // Read all data once
+   if (dataRange.getValues().length <= 1) {
+ Logger.log('promoteWaitlist: Sheet is empty or only has a header row. No passes to check.');
+ return;
+  }
+  const allData = dataRange.getValues(); // Read all data once
   const friendsLookup = getFriendsLookup(); // Load friends data
   const exemptStudents = getExemptStudentsSet(); // Load exempt students
 
   let promotedCount = 0;
   const updatesMade = new Set(); // To track emails of students that were promoted within this run
 
+  const now = new Date();
+  const todayStart = new Date();
+ todayStart.setHours(0, 0, 0, 0); // Start of today
+  const todayEnd = new Date();
+ todayEnd.setHours(23, 59, 59, 999); // End of today
+
+  const todayPassesWithOriginalIndices = [];
+
+  // Filter for today's passes
+  for (let i = 0; i < allData.length; i++) { // Iterate through all data
+    const rowData = allData[i];
+    const timestampValue = rowData[0];
+
+    if (timestampValue instanceof Date && timestampValue >= todayStart && timestampValue <= todayEnd) {
+      todayPassesWithOriginalIndices.push({ data: rowData, originalRow: i + 1 }); // Store data and 1-indexed original row number
+    }
+  }
+
   // Track currently active students AND active rooms
   const currentlyActiveStudents = new Set();
   const currentlyActiveRooms = new Set(); // NEW: Track rooms that currently have an active pass (non-exempt)
 
-  // Separate all passes into waitlisted and active categories
+  // Separate today's passes into waitlisted and active categories
   const waitlistedPasses = [];
   // Store relevant info for active passes (room, email, isExempt)
   const allActivePasses = []; 
 
-  for (let i = 1; i < data.length; i++) { // Skip header
-    const rowData = data[i];
-    const status = rowData[11]; // Column L (0-indexed 11)
-    const email = String(rowData[1]).toLowerCase().trim();
-    const room = rowData[3];
+  for (const passInfo of todayPassesWithOriginalIndices) {
+    const rowData = passInfo.data;
+    const status = rowData[11];
+    const studentEmail = String(rowData[1]).toLowerCase().trim();
+    const roomNumber = rowData[3];
     const submissionTime = new Date(rowData[0]);
+    const isExempt = exemptStudents.has(studentEmail);
 
     if (status === "WAITLISTED") {
-      waitlistedPasses.push({ rowIdx: i, data: rowData, email: email, submissionTime: submissionTime });
+      waitlistedPasses.push({ data: rowData, originalRow: passInfo.originalRow, email: studentEmail, submissionTime: submissionTime });
     } else if (status === "ACTIVE") {
-      const isExempt = exemptStudents.has(email);
-      allActivePasses.push({ room: room, email: email, isExempt: isExempt });
-      currentlyActiveStudents.add(email);
-      if (!isExempt) { // Only track non-exempt active passes for room availability
-        currentlyActiveRooms.add(room); // Add the room if it has an active non-exempt pass
-      }
+      currentlyActiveStudents.add(studentEmail);
+      allActivePasses.push({ email: studentEmail, room: roomNumber, isExempt: isExempt });
+      if (!isExempt) currentlyActiveRooms.add(roomNumber); // Only track non-exempt active rooms
     }
-  }
 
-  // Sort waitlisted passes by submission time (oldest first) for FIFO promotion
+  } // Added closing brace for the filtering loop
+  // Sort waitlisted passes by submission time (oldest first) for FIFO promotion  
   waitlistedPasses.sort((a, b) => a.submissionTime.getTime() - b.submissionTime.getTime());
   Logger.log(`promoteWaitlist: Found ${waitlistedPasses.length} waitlisted passes, sorted by submission time.`);
   Logger.log(`promoteWaitlist: Currently active rooms (non-exempt): ${Array.from(currentlyActiveRooms).join(', ') || 'None'}`);
@@ -659,10 +741,10 @@ function promoteWaitlist() {
   // Iterate through sorted waitlisted passes to determine if they can be promoted
   for (const pass of waitlistedPasses) {
     const studentEmail = pass.email;
-    const roomNumber = pass.data[3];
-    const destination = pass.data[4].toLowerCase();
-    const rowIdx = pass.rowIdx;
-    const originalSubmissionTime = pass.submissionTime;
+    const roomNumber = passInfo.data[3];
+    const destination = passInfo.data[4].toLowerCase();
+    const originalRow = passInfo.originalRow;
+    const originalSubmissionTime = new Date(passInfo.data[0]);
 
     Logger.log(`promoteWaitlist - Considering Row ${rowIdx + 1} for promotion. Email: ${studentEmail}, Room: ${roomNumber}, OriginalSubmission: ${originalSubmissionTime.toLocaleString()}`);
 
@@ -694,17 +776,17 @@ function promoteWaitlist() {
     if (!updatesMade.has(studentEmail)) { // This prevents promoting the same student multiple times if they had multiple waitlisted entries
       // Ensure rowData array has enough length to avoid errors when setting values
       const targetCols = Math.max(pass.data.length, 14); // Need space for column N (index 13)
-      while (pass.data.length < targetCols) {
-          pass.data.push("");
+ while (passInfo.data.length < targetCols) {
+ passInfo.data.push("");
       }
 
       // Update status and activation timestamp in memory
-      pass.data[11] = "ACTIVE"; // Column L - Status
+ passInfo.data[11] = "ACTIVE"; // Column L - Status
       const newActivationTime = new Date(); // This should be the current time of promotion
-      pass.data[13] = newActivationTime; // Column N - Activation Timestamp
+ passInfo.data[13] = newActivationTime; // Column N - Activation Timestamp
 
       let visualDuration = VISUAL_PASS_DURATION_MINUTES;
-      if (destination.includes("nurse")) visualDuration = 8;
+      if (destination.includes("nurse")) visualDuration = 8; // Use the destination from the pass data
       else if (destination.includes("locker")) visualDuration = 5;
       else if (destination.includes("bathroom")) visualDuration = 5;
       else if (destination.includes("guidance")) visualDuration = 12;
@@ -716,8 +798,8 @@ function promoteWaitlist() {
       try {
         GmailApp.sendEmail('', EMAIL_SUBJECT, "Your hall pass is now active", { htmlBody: html, bcc: studentEmail });
         Logger.log(`  - Student ${studentEmail} (row ${rowIdx + 1}) PROMOTED from waitlist to active. Email sent.`);
-        Logger.log(`    - Original submission time (Col A): ${originalSubmissionTime.toLocaleString()}`);
-        Logger.log(`    - New Activation time (Col N): ${newActivationTime.toLocaleString()}`);
+ Logger.log(`  - Student ${studentEmail} (row ${originalRow}) PROMOTED from waitlist to active. Email sent.`);
+ Logger.log(`    - New Activation time (Col N): ${newActivationTime.toLocaleString()}`);
       } catch (emailError) {
         Logger.log(`  - ERROR sending promotion email to ${studentEmail} (row ${rowIdx + 1}): ${emailError.message}`);
       }
@@ -729,7 +811,9 @@ function promoteWaitlist() {
           currentlyActiveRooms.add(roomNumber);
           Logger.log(`    - Room ${roomNumber} is now considered active by ${studentEmail}.`);
       }
-      data[rowIdx] = pass.data; // Update the main 'data' array with the modified 'pass.data'
+
+      // Update the corresponding row in the original allData array in memory
+      allData[originalRow - 1] = passInfo.data; // Use original row index (0-indexed)
 
       // IMPORTANT: Since we want only one per classroom, after promoting one,
       // we need to break out of the loop or continue to the next iteration ONLY IF
@@ -752,7 +836,7 @@ function promoteWaitlist() {
 
   // Perform batch update if any passes were promoted
   if (promotedCount > 0) {
-    dataRange.setValues(data); // Write all modified data back to the sheet
+    dataRange.setValues(allData); // Write all modified data back to the sheet
     Logger.log(`promoteWaitlist: Promoted ${promotedCount} waitlisted passes and updated sheet.`);
   } else {
     Logger.log('promoteWaitlist: No waitlisted passes could be promoted at this time.');
@@ -930,6 +1014,7 @@ function onEdit(e) {
     Logger.log(`onEdit: Edit not in Status column (L) or is header row. Ignoring.`);
   }
 }
+
 
 // --- Setup Function (Run this once manually to initialize Script Properties) ---
 function setup() {
